@@ -8,7 +8,8 @@ commands to execute live in a repository **Actions variable** — not in code.
 OpenBB is an open data platform for financial research: a Python SDK
 (`from openbb import obb`) that gives unified access to many data
 providers (equity prices, fundamentals, economics, and more) behind one
-interface, e.g. `obb.equity.price.historical(symbol=..., provider="yahoo")`.
+interface, e.g. `obb.equity.price.historical(symbol=..., provider="yfinance")`
+(the Yahoo Finance provider — see the packaging notes in the pilot section).
 
 OpenBB is **open-core**: the platform / SDK itself is free and open
 source, while the **Workspace UI** (the hosted web/desktop front end)
@@ -45,8 +46,10 @@ Pilot script `scripts/fetch.py` (defaults overridable via
 `--tickers`, `--years`, `--start-date`, `--end-date`, `--provider`):
 
 - Tickers: `AAPL`, `POUL.CA`
-- Call per ticker: `obb.equity.price.historical(symbol=ticker, provider="yahoo")`
-  for ~2 years
+- Call per ticker: `obb.equity.price.historical(symbol=ticker, provider=<slug>)`
+  for ~2 years. The script tries the requested slug (`yahoo`) first and
+  then the actual OpenBB v4 Yahoo slug (`yfinance`), recording every
+  attempt and its exact error in `summary.json`.
 - Per ticker it records: rows, first/last date, first/last close — or the
   exact error — saves a CSV per ticker, and writes `results/summary.json`
   with the coverage verdict per ticker.
@@ -59,5 +62,11 @@ python scripts/fetch.py 2>&1 | tee results/run.log
 ```
 
 Note: the `openbb` install is heavy — the Install dependencies step can
-take a long while on a fresh runner. `requirements.txt` includes both
-`openbb` and `openbb-yahoo` (the Yahoo provider extension).
+take a long while on a fresh runner.
+
+**Packaging notes (learned from the pilot's first run, 2026-11-10):**
+there is no `openbb-yahoo` package on PyPI (`No matching distribution
+found for openbb-yahoo` — the first run failed on exactly that). The
+Yahoo Finance provider package is `openbb-yfinance`, its provider slug
+is `yfinance`, and OpenBB 5.0.0 removed it (it needs openbb-core 1.x) —
+so `requirements.txt` pins `openbb<5` and `openbb-yfinance<2`.
