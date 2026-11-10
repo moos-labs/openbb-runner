@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-"""Fetch historical equity prices via OpenBB (yahoo provider).
+"""Fetch historical equity prices via OpenBB (Yahoo Finance provider).
 
 Generic script: tickers are CLI args, nothing exchange-specific is
 hardcoded beyond the pilot defaults.
+
+Packaging notes (verified in the pilot's first run, 2026-11-10):
+- There is NO `openbb-yahoo` package on PyPI — pip fails with
+  "No matching distribution found for openbb-yahoo".
+- The Yahoo Finance provider package is `openbb-yfinance`, and its
+  OpenBB provider slug is "yfinance" (not "yahoo").
+- OpenBB 5.0.0 removed the yfinance provider (it requires
+  openbb-core 1.x), so this runner pins openbb<5 + openbb-yfinance<2.
 
 Usage:
     python scripts/fetch.py [--tickers AAPL,POUL.CA] [--years 2]
                             [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
                             [--provider yahoo] [--output-dir results]
 
-For each ticker it calls:
-    obb.equity.price.historical(symbol=ticker, provider="yahoo",
+For each ticker it tries, in order, the requested provider and then
+the known Yahoo slug "yfinance":
+    obb.equity.price.historical(symbol=ticker, provider=<slug>,
                                 start_date=..., end_date=...)
-converts the result to a dataframe, saves a CSV per ticker, and writes
-results/summary.json with, per ticker: rows, first/last date,
+Every attempt (and its exact error) is recorded in summary.json, the
+result is converted to a dataframe, a CSV is saved per ticker, and
+results/summary.json carries, per ticker: rows, first/last date,
 first/last close — or the exact error — plus a coverage verdict
-(does the provider return data for that ticker?).
+(does the Yahoo provider return data for that ticker?).
 """
 import argparse
 import json
@@ -139,21 +149,38 @@ def main():
         print(json.dumps(summary, indent=2))
         return 0
 
+    # Provider slugs to try, in order: the requested one first, then the
+    # actual Yahoo Finance slug in OpenBB v4 ("yfinance").
+    provider_chain = [args.provider]
+    for slug in ("yfinance", "yahoo"):
+        if slug not in provider_chain:
+            provider_chain.append(slug)
+    summary["provider_requested"] = args.provider
+    summary["provider_chain_tried"] = provider_chain
+
     for ticker in tickers:
-        entry = {"symbol": ticker, "provider": args.provider}
-        try:
-            result = obb.equity.price.historical(
-                symbol=ticker,
-                provider=args.provider,
-                start_date=str(start),
-                end_date=str(end),
-            )
-            df = to_dataframe(result)
-            entry["rows"] = int(len(df))
-            if len(df) == 0:
-                entry["verdict"] = "NO_DATA: provider returned an empty dataframe"
-            else:
+        entry = {"symbol": ticker, "provider_requested": args.provider,
+                 "attempts": []}
+        entry["rows"] = 0
+        entry["verdict"] = "ERROR: no provider attempt succeeded"
+        for slug in provider_chain:
+            attempt = {"provider": slug}
+            try:
+                result = obb.equity.price.historical(
+                    symbol=ticker,
+                    provider=slug,
+                    start_date=str(start),
+                    end_date=str(end),
+                )
+                df = to_dataframe(result)
+                attempt["rows"] = int(len(df))
+                if len(df) == 0:
+                    attempt["error"] = "provider returned an empty dataframe"
+                    entry["attempts"].append(attempt)
+                    continue
                 first_date, last_date, first_close, last_close = extract_series(df)
+                entry["provider_used"] = slug
+                entry["rows"] = int(len(df))
                 entry["first_date"] = first_date
                 entry["last_date"] = last_date
                 entry["first_close"] = first_close
@@ -162,13 +189,17 @@ def main():
                 csv_path = os.path.join(args.output_dir, f"{safe_name(ticker)}.csv")
                 df.to_csv(csv_path)
                 entry["csv"] = os.path.basename(csv_path)
-        except Exception as e:
-            entry["rows"] = 0
-            entry["error"] = f"{type(e).__name__}: {e}"
-            entry["traceback_tail"] = traceback.format_exc().splitlines()[-5:]
-            entry["verdict"] = "ERROR: provider did not return data for this ticker"
+                entry["attempts"].append(attempt)
+                break
+            except Exception as e:
+                attempt["error"] = f"{type(e).__name__}: {e}"
+                attempt["traceback_tail"] = traceback.format_exc().splitlines()[-5:]
+                entry["attempts"].append(attempt)
+        if entry["rows"] == 0 and entry["attempts"]:
+            entry["error"] = entry["attempts"][-1].get("error", "")
         summary["tickers"][ticker] = entry
         print(f"{ticker}: {entry.get('verdict')} rows={entry.get('rows')} "
+              f"provider_used={entry.get('provider_used', '')} "
               f"error={entry.get('error', '')}")
 
     # Headline coverage question for the pilot: does yahoo reach POUL.CA?
